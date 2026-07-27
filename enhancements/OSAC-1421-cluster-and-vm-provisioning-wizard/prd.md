@@ -3,7 +3,7 @@ title: Configuration Wizard for Cluster and VM Resources
 authors:
   - brotman@redhat.com
 creation-date: 2026-06-14
-last-updated: 2026-07-09
+last-updated: 2026-07-27
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1421
 see-also:
@@ -30,8 +30,9 @@ superseded-by:
 - **BareMetalInstance** provisioning (separate PRD)
 - **Template parameters**
 - **Multi-NIC** — wizard submits one `network_attachments` entry (one VN, one subnet, security groups); no add/remove NIC rows
-- **Cluster template `node_sets` defaults** — the wizard does **not** load, display, or apply `ClusterTemplate.spec.node_sets` (`host_type` or `size` defaults)
 - **`spec.additional_disks`** — wizard scope undecided ([§5](#5-open-decisions)); default: boot disk only
+
+> **Superseded (2026-07-27):** an earlier revision of this PRD listed "load/apply `ClusterTemplate.spec.node_sets`" as a non-goal, on the premise that node sets were fully tenant-composed. fulfillment-service's cluster create validation (`PrivateClustersServer.validateNodeSets`) now rejects any `node_sets` entry whose map key or host type isn't defined in the associated `ClusterTemplate.spec.node_sets` — so loading and applying the template's node sets is now a **hard requirement**, not a non-goal. See [§2.1.1](#211-static-wizard-fields), [§2.1.6](#216-cluster-host-type-picker-api), and [§5](#5-open-decisions).
 
 ## 2. Requirements
 
@@ -75,13 +76,13 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 | General         | `spec.ssh_public_key`       | SSH public key                                                | Text (multiline)                     | Optional |
 | General         | `spec.pull_secret`          | Pull secret                                                   | Text (multiline, masked)             | Required |
 | Configuration   | `spec.release_image`        | OpenShift version (release image)                             | Text                                 | Required |
-| Configuration   | `spec.node_sets`            | Worker node sets                                              | Editable table (add/remove rows) | Required |
+| Configuration   | `spec.node_sets`            | Worker node sets                                              | Fixed rows from `ClusterTemplate.spec.node_sets` (size editable only) | Required |
 | Networking      | `spec.network.pod_cidr`     | Pod network CIDR                                              | Text                                 | ?        |
 | Networking      | `spec.network.service_cidr` | Service network CIDR                                          | Text                                 | ?        |
 
 **Notes:**
 
-- **`spec.node_sets`**: tenant-managed node sets on the Configuration step. The wizard **does not** read `ClusterTemplate.spec.node_sets`. Tenants **add** and **remove** rows. Each row collects only **`host_type`** (picker — [§2.1.6](#216-cluster-host-type-picker-api)) and **`size`** (number of nodes, must be > 0) per `ClusterNodeSet` — no separate name or map-key field in the UI. At least one row is required before leaving Configuration. **Each `host_type` may appear on at most one row** — duplicate host types are blocked by validation. The create payload is `spec.node_sets` as a map keyed by **host type id** (the map key equals `host_type` on each entry); each value is `{ host_type, size }` only. **v1:** catalog item `field_definitions` defaults for `spec.node_sets` (including `host_type` and `size`) **do not apply** — the node-sets table starts empty on catalog selection; tenants compose all rows manually ([§2.1.2](#212-catalog-overlay-and-defaults)).
+- **`spec.node_sets`** (**revised 2026-07-27** — see superseded non-goal above): **template-driven**, not tenant-composed. The wizard loads the selected catalog item's `ClusterTemplate` ([§2.1.6](#216-cluster-host-type-picker-api)) and renders exactly one row per key in `ClusterTemplate.spec.node_sets` — no add/remove. Each row shows the node-set key (e.g. `workers`) and its **host type** (read-only, inherited from the template) and collects only **`size`** (number of nodes, must be > 0) per `ClusterNodeSet`. All rows require a positive size before leaving Configuration. The create payload is `spec.node_sets` as a map using the **same keys as the template** (not the host type id); each value is `{ host_type, size }`, with `host_type` copied verbatim from the template's entry for that key. fulfillment-service (`PrivateClustersServer.validateNodeSets`) rejects any key or host type that doesn't match the template, so the wizard cannot construct an invalid payload by construction. **v1:** catalog item `field_definitions` defaults for `spec.node_sets` still do not apply — sizes are not prefilled from the catalog item, only from the template's own rows ([§2.1.2](#212-catalog-overlay-and-defaults)).
 
 **Create payload:** Only paths in [§2.1.1](#211-static-wizard-fields) plus catalog item reference; VM hardcodes `spec.image.source_type` = `registry`; VM sends `spec.instance_type` and `spec.is_windows` explicitly, not `spec.cores` or `spec.memory_gib`.
 
@@ -89,7 +90,7 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 
 For each static **non-picker** field, match `field_definitions` by `path` (spec-relative paths such as `ssh_key`, `boot_disk.size_gib`, or `spec.image.source_ref` — fulfillment accepts both forms). **General basics** paths (`spec.ssh_key`, `spec.ssh_public_key`, `spec.pull_secret`) and **Configuration** / **Networking** non-picker paths participate in overlay. Non-matching paths are **ignored** (not on Review, not in payload).
 
-**Picker-backed fields (v1):** `spec.instance_type`, `spec.network_attachments` (including nested paths such as `spec.network_attachments.subnet`), and cluster `spec.node_sets` **host type** (per-row dropdown) load options from list APIs ([§2.1.5](#215-vm-instance-type-picker-api), [§2.1.4](#214-vm-networking-picker-apis), [§2.1.6](#216-cluster-host-type-picker-api)). Matching catalog `field_definitions` for these paths are **ignored** — wizard labels, editability, validation, and **defaults** come from wizard defaults and list-API behavior only. **Cluster `spec.node_sets` (v1):** no catalog item defaults apply — the wizard does not prefill node set rows from `field_definitions` on catalog selection; the table starts empty. Catalog overlay on picker fields is **deferred** to a later release ([§5](#5-open-decisions)).
+**Picker-backed fields (v1):** `spec.instance_type` and `spec.network_attachments` (including nested paths such as `spec.network_attachments.subnet`) load options from list APIs ([§2.1.5](#215-vm-instance-type-picker-api), [§2.1.4](#214-vm-networking-picker-apis)). Matching catalog `field_definitions` for these paths are **ignored** — wizard labels, editability, validation, and **defaults** come from wizard defaults and list-API behavior only. **Cluster `spec.node_sets` (revised 2026-07-27):** no longer picker-backed in the free-choice sense — rows and host types are fixed by the selected `ClusterTemplate.spec.node_sets` ([§2.1.6](#216-cluster-host-type-picker-api)); catalog item `field_definitions` still do not prefill sizes. Catalog overlay on `spec.instance_type` / `spec.network_attachments` is **deferred** to a later release ([§5](#5-open-decisions)).
 
 | Aspect     | Matching entry (non-picker fields, including General basics)                | No matching entry     |
 | ---------- | --------------------------------------------------------------------------- | --------------------- |
@@ -185,42 +186,39 @@ Do **not** send `cores` or `memory_gib` — they are mutually exclusive with `in
 
 **Load order:** load instance type list when entering Configuration → auto-select when the list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
 
-### 2.1.6 Cluster host type picker API
+### 2.1.6 Cluster node sets: template source and host type display
 
-The Configuration step loads host type options from the **public** fulfillment API (`osac.public.v1`). The UI uses the generated OpenAPI client (REST); gRPC equivalent listed for reference.
+**Revised 2026-07-27** (was "Cluster host type picker API" — the host type is no longer picked freely; see superseded non-goal in [§1.2](#12-non-goals)).
 
-| Picker | gRPC | REST | Purpose |
-| ------ | ---- | ---- | ------- |
-| Host type | `HostTypes.List` | `GET /api/fulfillment/v1/host_types` | Tenant-visible host types for node set selection |
+The Configuration step's node-set rows come from the `ClusterTemplate` referenced by the selected catalog item's `template` field, **not** from a free host-type picker. The UI uses the generated OpenAPI client (REST); gRPC equivalent listed for reference.
 
-**List request parameters:** optional query `filter` (CEL), `limit`, `offset`, `order`. Tenant scope is implicit from the authenticated session.
+| Call | gRPC | REST | Purpose |
+| ---- | ---- | ---- | ------- |
+| Template lookup | `ClusterTemplates.Get` | `GET /api/fulfillment/v1/cluster_templates/{id}` | Authoritative source of node-set keys and host types (`ClusterTemplate.spec.node_sets`) |
+| Host type | `HostTypes.List` | `GET /api/fulfillment/v1/host_types` | Display name only — resolves each template node set's `host_type` id to a friendly label; **not** used for selection |
 
-**Picker display and values:**
+**Row rendering:** one row per key in `ClusterTemplate.spec.node_sets` (no add/remove). Each row shows the node-set key and the host type's display name (`title` or `metadata.name`, fallback `id`) as **read-only** text, and collects only **`size`** (number input, must be > 0).
 
-| Picker | Option label | Selected value |
-| ------ | ------------ | -------------- |
-| Host type | `title` or `metadata.name` (fallback `id`) | Host type `id` — used as both the row selection and the `spec.node_sets` **map key**; `host_type` on the entry value matches the key |
-
-**Create payload** — one map entry per wizard row; **map key = host type id** (same as `host_type` on the value):
+**Create payload** — one map entry per template key, using the **template's own keys** (not the host type id) and copying `host_type` verbatim from the template's entry for that key:
 
 ```json
 {
   "node_sets": {
-    "acme_1tb": {
+    "workers": {
       "host_type": "acme_1tb",
       "size": 3
     },
-    "acme_1tb_h100": {
+    "masters": {
       "host_type": "acme_1tb_h100",
-      "size": 2
+      "size": 3
     }
   }
 }
 ```
 
-Per `ClusterNodeSet` in `cluster_type.proto` — each value has **`host_type`** and **`size`** only. The wizard enforces **unique host types** across rows (no duplicate keys). **v1:** catalog item `field_definitions` defaults for node sets do not apply — no prefill from the selected `ClusterCatalogItem`. Catalog `field_definitions` for `spec.node_sets` paths are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)) — node set composition is API-driven via the host type list, not template- or catalog-default-driven.
+Per `ClusterNodeSet` in `cluster_type.proto` — each value has **`host_type`** and **`size`** only. fulfillment-service's `PrivateClustersServer.validateNodeSets` (`internal/servers/private_clusters_server.go`) rejects any `node_sets` map key that isn't a key in the template, and any `host_type` that doesn't match the template's value for that key — so the wizard cannot construct a request the server would reject. **v1:** catalog item `field_definitions` defaults for node sets still do not apply — no prefill from the selected `ClusterCatalogItem`, only from the template's own rows.
 
-**Load order:** load host type list when entering Configuration (or when the node-sets table mounts). No auto-select from `ClusterTemplate`; tenants choose host type per row from the dropdown. Host types already selected on another row are excluded from (or blocked in) remaining row pickers.
+**Load order:** load the template (`ClusterTemplates.Get`) when entering Configuration (or reuse it if already fetched for catalog/General display); load the host type list in parallel for display-name resolution only.
 
 ### 2.2 Wizard behavior
 
@@ -243,14 +241,15 @@ flowchart LR
 - Review shows the same values as on wizard step fields (blank, default-driven, or user-entered).
 - Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on Configuration and Networking **non-picker** fields and General **basics** fields; picker-backed paths ignore `field_definitions` in v1; catalog `default` prefills matching wizard fields on catalog selection; non-editable fields without `default` appear blank and read-only; non-editable fields with `default` appear read-only with value and are included in the client payload.
 - VM: single `network_attachments` entry assembled from picker APIs; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
-- Cluster: `node_sets` is tenant-composed on Configuration — add/remove rows; each row has `host_type` from `HostTypes.List` and `size` > 0 only (`ClusterNodeSet`); **unique host type per row**; map key = host type id; wizard does not load or apply `ClusterTemplate.spec.node_sets`; **catalog item defaults for `spec.node_sets` do not apply in v1** (empty table on catalog selection).
+- Cluster: `node_sets` is **template-driven** on Configuration — one fixed row per key in `ClusterTemplate.spec.node_sets` (no add/remove); each row's `host_type` is read-only and inherited from the template; only `size` > 0 is tenant-entered (`ClusterNodeSet`); payload map key = template's node-set key (not host type id); **catalog item defaults for `spec.node_sets` do not apply in v1** (sizes come from tenant entry only, not prefilled).
 - All **?** requiredness decisions resolved before release ([§5](#5-open-decisions)).
 - On Next click, validate all fields on the current step (including untouched fields); surface hidden inline errors; show an alert if invalid; do not advance until the step is valid.
 
 ## 4. Dependencies
 
 - `ComputeInstanceCatalogItem`, `ClusterCatalogItem` (with `field_definitions`)
-- `HostTypes.List` (cluster Configuration step — host type picker per node set row)
+- `ClusterTemplates.Get` (cluster Configuration step — authoritative source of `node_sets` keys and host types; **new dependency, 2026-07-27**)
+- `HostTypes.List` (cluster Configuration step — display-name resolution for template node-set host types only, not selection)
 - `VirtualNetworks.List`, `Subnets.List`, `SecurityGroups.List` (gRPC `osac.public.v1`) / REST `GET /api/fulfillment/v1/virtual_networks`, `.../subnets`, `.../security_groups` ([§2.1.4](#214-vm-networking-picker-apis))
 - `InstanceTypes.List` (gRPC `osac.public.v1`) / REST `GET /api/fulfillment/v1/instance_types` ([§2.1.5](#215-vm-instance-type-picker-api))
 - ComputeInstance and Cluster create APIs
@@ -277,7 +276,14 @@ Resolve before implementation.
 
 ### Cluster `node_sets` composition
 
-**Resolved:** Tenant-managed node sets on Configuration. The wizard ignores `ClusterTemplate.spec.node_sets` entirely. Tenants add/remove rows; each row collects `host_type` (dropdown from `HostTypes.List`) and `size` only. Map key = host type id; duplicate host types are not allowed. **v1:** catalog item `field_definitions` defaults for `spec.node_sets` do not apply — node set rows are not prefilled from the selected catalog item. See [§2.1.1](#211-static-wizard-fields) and [§2.1.6](#216-cluster-host-type-picker-api).
+**Re-resolved 2026-07-27** (supersedes the prior resolution below): **template-driven** node sets on Configuration. fulfillment-service's `PrivateClustersServer.validateNodeSets` rejects any `node_sets` map key or host type that isn't defined in the associated `ClusterTemplate.spec.node_sets`, so the wizard now loads the template and renders one fixed row per template node-set key; only `size` is tenant-entered. No add/remove; no free host-type dropdown. Map key = template's node-set key (not host type id). **v1:** catalog item `field_definitions` defaults for `spec.node_sets` still do not apply — sizes are not prefilled from the selected catalog item. Confirmed against the CSP Admin catalog item wizard's equivalent fix ([OSAC-2936](https://redhat.atlassian.net/browse/OSAC-2936), osac-project/osac-ui#102). See [§2.1.1](#211-static-wizard-fields) and [§2.1.6](#216-cluster-node-sets-template-source-and-host-type-display).
+
+<details>
+<summary>Prior resolution (2026-07-09, now superseded)</summary>
+
+Tenant-managed node sets on Configuration. The wizard ignores `ClusterTemplate.spec.node_sets` entirely. Tenants add/remove rows; each row collects `host_type` (dropdown from `HostTypes.List`) and `size` only. Map key = host type id; duplicate host types are not allowed. **v1:** catalog item `field_definitions` defaults for `spec.node_sets` do not apply — node set rows are not prefilled from the selected catalog item.
+
+</details>
 
 ### Additional disks
 
